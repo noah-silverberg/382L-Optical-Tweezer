@@ -2,6 +2,7 @@ Data/
 .DS_Store
 Videos/
 Tracking_Results/
+Old_Code/
 *.mp4
 *.csv
 *.jpg

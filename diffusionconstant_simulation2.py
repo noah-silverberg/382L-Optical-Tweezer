@@ -9,14 +9,14 @@ import matplotlib.pyplot as plt
 # ----------------------------
 # Simulation Parameters
 # ----------------------------
-np.random.seed(21)  # For reproducibility
+np.random.seed(47)  # For reproducibility
 
-dt = 0.01  # Time step in seconds
+dt = 1 / 57  # Time step in seconds
 M = 100  # Number of particles in the ensemble
 
 # Trajectory length parameters
-min_steps = 50  # Minimum number of steps for a trajectory
-max_steps = 300  # Maximum number of steps for a trajectory
+min_steps = 100  # Minimum number of steps for a trajectory
+max_steps = 100  # Maximum number of steps for a trajectory
 
 # True parameters (microns, micron²/s)
 v_true = 1.0  # Common drift velocity (microns/s)

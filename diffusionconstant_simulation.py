@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 np.random.seed(123)  # For reproducibility
 
 dt = 0.01  # Time step in seconds
-M = 100000  # Number of particles in the ensemble
+M = 100  # Number of particles in the ensemble
 
 # Trajectory length parameters
 min_steps = 100  # Minimum number of steps for a trajectory
