@@ -278,8 +278,18 @@ t_valid_y = t_common[valid_indices_y]
 ensemble_avg_x = ensemble_sum_x[valid_indices_x] / ensemble_count_x[valid_indices_x]
 ensemble_avg_y = ensemble_sum_y[valid_indices_y] / ensemble_count_y[valid_indices_y]
 
-global_v_x, global_intercept_x = np.polyfit(t_valid_x, ensemble_avg_x, 1)
-global_v_y, global_intercept_y = np.polyfit(t_valid_y, ensemble_avg_y, 1)
+(global_v_x, global_intercept_x), cov_x = np.polyfit(
+    t_valid_x, ensemble_avg_x, 1, cov=True
+)
+(global_v_y, global_intercept_y), cov_y = np.polyfit(
+    t_valid_y, ensemble_avg_y, 1, cov=True
+)
+
+# Standard errors (the square roots of the diagonal of the covariance matrix)
+slope_err_x = np.sqrt(cov_x[0, 0])
+slope_err_y = np.sqrt(cov_y[0, 0])
+intercept_err_x = np.sqrt(cov_x[1, 1])
+intercept_err_y = np.sqrt(cov_y[1, 1])
 
 print("\n=== Global Drift Parameters ===")
 print(
@@ -288,6 +298,10 @@ print(
 print(
     f"Global drift in Y: v_y = {global_v_y:.4f} µm/s, intercept = {global_intercept_y:.4f} µm"
 )
+print(f"Standard error in slope (v_x): {slope_err_x:.4f}")
+print(f"Standard error in slope (v_y): {slope_err_y:.4f}")
+print(f"Standard error in intercept (v_x): {intercept_err_x:.4f}")
+print(f"Standard error in intercept (v_y): {intercept_err_y:.4f}")
 
 #############################################
 ### DRIFT CORRECTION AND SCALING PER PARTICLE
@@ -371,68 +385,256 @@ ss_tot_y = np.sum((ensemble_avg_scaled_MSD_y - np.mean(ensemble_avg_scaled_MSD_y
 R2_y = 1 - ss_res_y / ss_tot_y
 
 print("\n=== Ensemble Analysis (Radius–Adjusted) ===")
-print(
-    f"X–direction: Estimated universal diffusion parameter D0_x = {D0_x:.4f} µm³/s (R² = {R2_x:.4f})"
-)
-print(
-    f"Y–direction: Estimated universal diffusion parameter D0_y = {D0_y:.4f} µm³/s (R² = {R2_y:.4f})"
-)
+# print(
+#     f"X–direction: Estimated universal diffusion parameter D0_x = {D0_x:.4f} µm³/s (R² = {R2_x:.4f})"
+# )
+# print(
+#     f"Y–direction: Estimated universal diffusion parameter D0_y = {D0_y:.4f} µm³/s (R² = {R2_y:.4f})"
+# )
 print(f"Ensemble average D0 = {D0_avg:.4f} µm³/s")
 
+# Compute the ensemble average for original y values (using all trajectories).
+ensemble_avg_y_original = np.divide(
+    ensemble_sum_y,
+    ensemble_count_y,
+    out=np.full_like(ensemble_sum_y, np.nan),
+    where=ensemble_count_y != 0,
+)
+
+# Compute the ensemble average for drift–corrected y values (using all trajectories).
+ensemble_corr_sum_y = np.zeros(max_length)
+counts_corr_y = np.zeros(max_length)
+for t_arr, y_arr in zip(particle_time, particle_raw_y):
+    N = len(t_arr)
+    # Subtract the global drift from each trajectory.
+    ensemble_corr_sum_y[:N] += y_arr - (global_intercept_y + global_v_y * t_arr)
+    counts_corr_y[:N] += 1
+ensemble_avg_y_corr = np.divide(
+    ensemble_corr_sum_y,
+    counts_corr_y,
+    out=np.full_like(ensemble_corr_sum_y, np.nan),
+    where=counts_corr_y != 0,
+)
+
+# ==============================================================
+# Compute STD bands for drift-corrected y displacement.
+# ==============================================================
+max_length = int(np.max(particle_lengths))  # maximum length of trajectories
+y_corr_all = [[] for _ in range(max_length)]
+for traj in range(len(particle_time)):
+    N_i = len(particle_time[traj])
+    for j in range(N_i):
+        val = particle_raw_y[traj][j] - (
+            global_intercept_y + global_v_y * particle_time[traj][j]
+        )
+        y_corr_all[j].append(val)
+y_corr_avg = np.array(
+    [np.mean(vals) if len(vals) > 0 else np.nan for vals in y_corr_all]
+)
+y_corr_std = np.array(
+    [np.std(vals, ddof=1) if len(vals) > 1 else np.nan for vals in y_corr_all]
+)
+
+# ==============================================================
+# Compute STD bands for the unscaled MSD (drift-corrected).
+# ==============================================================
+msd_all = [[] for _ in range(max_length)]
+for traj in range(len(particle_time)):
+    N_i = len(particle_time[traj])
+    for j in range(N_i):
+        val = particle_raw_y[traj][j] - (
+            global_intercept_y + global_v_y * particle_time[traj][j]
+        )
+        msd_all[j].append(val**2)
+msd_avg = np.array([np.mean(vals) if len(vals) > 0 else np.nan for vals in msd_all])
+msd_std = np.array(
+    [np.std(vals, ddof=1) if len(vals) > 1 else np.nan for vals in msd_all]
+)
+
+# Use valid indices where enough trajectories contribute.
+valid = ensemble_count_y >= min_particles_avg
+x_valid = t_common[valid]
+y_corr_avg_valid = y_corr_avg[valid]
+y_corr_std_valid = y_corr_std[valid]
+msd_avg_valid = msd_avg[valid]
+msd_std_valid = msd_std[valid]
+
+# ==============================================================
+# Compute STD bands for the unscaled MSD (drift-corrected) for X
+# ==============================================================
+msd_all_x = [[] for _ in range(max_length)]
+for traj in range(len(particle_time)):
+    N_i = len(particle_time[traj])
+    for j in range(N_i):
+        val_x = particle_raw_x[traj][j] - (
+            global_intercept_x + global_v_x * particle_time[traj][j]
+        )
+        msd_all_x[j].append(val_x**2)
+msd_avg_x = np.array([np.mean(vals) if len(vals) > 0 else np.nan for vals in msd_all_x])
+msd_std_x = np.array(
+    [np.std(vals, ddof=1) if len(vals) > 1 else np.nan for vals in msd_all_x]
+)
+
+# Use valid indices (analogous to y)
+valid_x = ensemble_count_x >= min_particles_avg
+x_valid_x = t_common[valid_x]
+msd_avg_valid_x = msd_avg_x[valid_x]
+msd_std_valid_x = msd_std_x[valid_x]
+
+
+# ==============================================================
+# Perform linear fit (forced through zero) for the MSD data.
+# ==============================================================
+m_y_unscaled = np.sum(x_valid * msd_avg_valid) / np.sum(x_valid**2)
+msd_fit = m_y_unscaled * x_valid
+
+# --- Step 1: Collect raw data points for the y–direction (exclude first point) ---
+raw_times = []
+raw_msd = []
+# Use only raw points up to the last valid ensemble time (from x_valid, excluding the first point).
+max_valid_time = x_valid[-1]
+for t_arr, msd_arr in zip(particle_time, particle_scaled_MSD_y):
+    # Start at index 1 to skip the first point
+    for t_val, msd_val in zip(t_arr[1:], msd_arr[1:]):
+        if t_val <= max_valid_time:
+            raw_times.append(t_val)
+            raw_msd.append(msd_val)
+raw_times = np.array(raw_times)
+raw_msd = np.array(raw_msd)
+
+# --- Step 2: Fit the raw data (forced through zero, excluding first point) ---
+# Compute the slope using only the collected raw data points.
+m_y_raw = np.sum(raw_times * raw_msd) / np.sum(raw_times**2)
+msd_fit_raw = m_y_raw * raw_times
+
+# --- Step 3: Interpolate the uncertainty ---
+# We assume x_valid and msd_std_valid were computed using ensemble data and already exclude t=0,
+# or if not, we can simply ignore the first point.
+sigma_interp = np.interp(raw_times, x_valid, msd_std_valid)
+
+# --- Step 4: Calculate chi-square and reduced chi-square ---
+chi2_raw = np.sum(((raw_msd - msd_fit_raw) ** 2) / (sigma_interp**2))
+dof_raw = len(raw_times) - 1  # one fit parameter (the slope)
+red_chi2_raw = chi2_raw / dof_raw
+
+print("\n=== Chi-Square Analysis Using Raw Data Points (Excluding First Point) ===")
+print(f"Fitted slope (m_y_raw) = {m_y_raw:.4f}")
+print(f"Chi-square (raw) = {chi2_raw:.3f}")
+print(f"Reduced chi-square (raw) = {red_chi2_raw:.3f}")
+
+
+# --- X-Direction: Collect raw data points (excluding first point) ---
+raw_times_x = []
+raw_msd_x = []
+# Use only raw points up to the last valid ensemble time for x (x_valid_x), excluding the first point.
+max_valid_time_x = x_valid_x[-1]
+for t_arr, msd_arr in zip(particle_time, particle_scaled_MSD_x):
+    # Skip the first point by slicing with [1:]
+    for t_val, msd_val in zip(t_arr[1:], msd_arr[1:]):
+        if t_val <= max_valid_time_x:
+            raw_times_x.append(t_val)
+            raw_msd_x.append(msd_val)
+raw_times_x = np.array(raw_times_x)
+raw_msd_x = np.array(raw_msd_x)
+
+# --- X-Direction: Fit the raw data (forced through zero, excluding first point) ---
+m_x_raw = np.sum(raw_times_x * raw_msd_x) / np.sum(raw_times_x**2)
+msd_fit_raw_x = m_x_raw * raw_times_x
+
+# --- X-Direction: Interpolate the uncertainty ---
+sigma_interp_x = np.interp(raw_times_x, x_valid_x, msd_std_valid_x)
+
+# --- X-Direction: Calculate chi-square and reduced chi-square ---
+chi2_raw_x = np.sum(((raw_msd_x - msd_fit_raw_x) ** 2) / (sigma_interp_x**2))
+dof_raw_x = len(raw_times_x) - 1  # one fit parameter (the slope)
+red_chi2_raw_x = chi2_raw_x / dof_raw_x
+
+print(
+    "\n=== Chi-Square Analysis Using Raw Data Points (Excluding First Point) for X-Direction ==="
+)
+print(f"Fitted slope (m_x_raw) = {m_x_raw:.4f}")
+print(f"Chi-square (raw) for X = {chi2_raw_x:.3f}")
+print(f"Reduced chi-square (raw) for X = {red_chi2_raw_x:.3f}")
+
+
+# ==============================================================
+# Create the 2-subplot figure with STD bands.
+# ==============================================================
+plt.style.use("seaborn-v0_8-whitegrid")
+fig, axs = plt.subplots(1, 2, figsize=(18, 5.1), sharex=True)
+
+# LEFT PLOT: Drift-corrected y displacement with STD band.
+axs[0].plot(
+    x_valid, y_corr_avg_valid, "r--", lw=2, label="Drift-corrected Ensemble Average"
+)
+axs[0].fill_between(
+    x_valid,
+    y_corr_avg_valid - y_corr_std_valid,
+    y_corr_avg_valid + y_corr_std_valid,
+    color="gray",
+    alpha=0.3,
+    label="±1 STD",
+)
+axs[0].set_title(r"Drift-corrected $y$ displacement", fontsize=18)
+axs[0].set_xlabel("Time (s)", fontsize=16)
+axs[0].set_ylabel(r"$y$ displacement ($\mu$m)", fontsize=16)
+axs[0].legend(fontsize=14)
+axs[0].tick_params(axis="both", which="major", labelsize=14)
+# Adjust annotation position to avoid overlap with the legend.
+axs[0].text(
+    0.05,
+    0.75,
+    f"Corrected drift velocity: $v_y = {global_v_y:.2f}$ $\mu$m/s",
+    transform=axs[0].transAxes,
+    fontsize=14,
+    color="black",
+    bbox=dict(facecolor="white", edgecolor="black", boxstyle="round,pad=0.3"),
+)
+
+# RIGHT PLOT: Ensemble-averaged unscaled MSD with STD band and linear fit.
+# RIGHT PLOT: Ensemble-averaged unscaled MSD with STD band and linear fit.
+axs[1].plot(x_valid, msd_avg_valid, "r--", lw=2, label="Ensemble MSD")
+axs[1].fill_between(
+    x_valid,
+    msd_avg_valid - msd_std_valid,
+    msd_avg_valid + msd_std_valid,
+    color="gray",
+    alpha=0.3,
+    label="±1 STD",
+)
+axs[1].plot(x_valid, msd_fit, "b-", lw=2, label=f"Fit: y = {m_y_unscaled:.3f} t")
+axs[1].set_title("MSD vs. Time", fontsize=18)
+axs[1].set_xlabel("Time (s)", fontsize=16)
+axs[1].set_ylabel("MSD ($\mu$m$^2$)", fontsize=16)
+axs[1].legend(fontsize=14, loc="upper left")
+axs[1].tick_params(axis="both", which="major", labelsize=14)
+# Boxed annotation with the linear fit parameters moved lower.
+fit_text = f"Fit: y = {m_y_unscaled:.3f} t\nReduced $\chi^2$ = {red_chi2_raw:.3f}"
+axs[1].text(
+    0.05,
+    0.75,
+    fit_text,
+    transform=axs[1].transAxes,
+    fontsize=14,
+    verticalalignment="top",
+    bbox=dict(boxstyle="round", facecolor="white", edgecolor="black", alpha=0.8),
+)
+
+
+fig.tight_layout()
+fig.savefig("ytrajectories.png", dpi=300)
+plt.show()
+
+
+#############################################
+### COMMENTED OUT: ORIGINAL MULTIPLE GRAPHS
+#############################################
+"""
 #############################################
 ### PLOTTING RESULTS FOR X-DATA (TOP 3 PANELS)
 #############################################
 fig_x, axs_x = plt.subplots(3, 1, figsize=(12, 14))
-
-# (1) Original x trajectories with global drift.
-for i in range(min(20, len(particle_time))):
-    axs_x[0].plot(particle_time[i], particle_raw_x[i], color="gray", alpha=0.5)
-    axs_x[0].plot(
-        particle_time[i],
-        global_intercept_x + global_v_x * particle_time[i],
-        "--",
-        color="red",
-        alpha=0.7,
-    )
-axs_x[0].set_xlabel("Time (s)")
-axs_x[0].set_ylabel("x (µm)")
-axs_x[0].set_title("X: Sample Original Trajectories with Global Drift")
-
-# (2) Drift-corrected x trajectories with ensemble average.
-for i in range(min(20, len(particle_time))):
-    x_corr_i = particle_raw_x[i] - (global_intercept_x + global_v_x * particle_time[i])
-    axs_x[1].plot(particle_time[i], x_corr_i, color="gray", alpha=0.5)
-ensemble_corr_sum_x = np.zeros(max_length)
-counts_corr_x = np.zeros(max_length)
-for t_arr, x_arr in zip(particle_time, particle_raw_x):
-    N = len(t_arr)
-    ensemble_corr_sum_x[:N] += x_arr - (global_intercept_x + global_v_x * t_arr)
-    counts_corr_x[:N] += 1
-valid_corr_x = counts_corr_x >= min_particles_avg
-t_corr_x = t_common[valid_corr_x]
-ensemble_corr_mean_x = ensemble_corr_sum_x[valid_corr_x] / counts_corr_x[valid_corr_x]
-axs_x[1].plot(t_corr_x, ensemble_corr_mean_x, "b-", lw=2, label="Ensemble Average")
-axs_x[1].set_xlabel("Time (s)")
-axs_x[1].set_ylabel("x_corr (µm)")
-axs_x[1].set_title("X: Drift-Corrected Trajectories with Ensemble Average")
-axs_x[1].legend()
-
-# (3) Ensemble-averaged radius-scaled MSD for x.
-axs_x[2].scatter(
-    t_valid_scaled_x, ensemble_avg_scaled_MSD_x, s=30, label="Ensemble MSD_x (scaled)"
-)
-axs_x[2].plot(
-    t_valid_scaled_x,
-    msd_predicted_x,
-    "r-",
-    lw=2,
-    label=f"Fit: y = {m_x:.3f} x, R² = {R2_x:.3f}",
-)
-axs_x[2].set_xlabel("Time (s)")
-axs_x[2].set_ylabel("r * MSD_x (µm³)")
-axs_x[2].set_title("X: Ensemble-Averaged Radius-Scaled MSD vs. Time")
-axs_x[2].legend()
-
+# ... (original plotting code for X-data)
 fig_x.tight_layout()
 fig_x.savefig("ensemble_analysis_x.png", dpi=300)
 plt.show()
@@ -441,60 +643,7 @@ plt.show()
 ### PLOTTING RESULTS FOR Y-DATA (TOP 3 PANELS)
 #############################################
 fig_y, axs_y = plt.subplots(3, 1, figsize=(12, 14))
-
-# (1) Original y trajectories with global drift.
-num_to_plot = min(20, len(particle_time))
-plot_indices = np.random.choice(len(particle_time), size=num_to_plot, replace=False)
-for i in plot_indices:
-    axs_y[0].plot(particle_time[i], particle_raw_y[i], color="gray", alpha=0.5)
-    axs_y[0].plot(
-        particle_time[i],
-        global_intercept_y + global_v_y * particle_time[i],
-        "--",
-        color="red",
-        alpha=0.7,
-    )
-axs_y[0].set_xlabel("Time (s)")
-axs_y[0].set_ylabel("y (µm)")
-axs_y[0].set_title("Y: Sample Original Trajectories with Global Drift")
-
-# (2) Drift-corrected y trajectories with ensemble average.
-num_to_plot = min(20, len(particle_time))
-plot_indices = np.random.choice(len(particle_time), size=num_to_plot, replace=False)
-for i in plot_indices:
-    y_corr_i = particle_raw_y[i] - (global_intercept_y + global_v_y * particle_time[i])
-    axs_y[1].plot(particle_time[i], y_corr_i, color="gray", alpha=0.5)
-ensemble_corr_sum_y = np.zeros(max_length)
-counts_corr_y = np.zeros(max_length)
-for t_arr, y_arr in zip(particle_time, particle_raw_y):
-    N = len(t_arr)
-    ensemble_corr_sum_y[:N] += y_arr - (global_intercept_y + global_v_y * t_arr)
-    counts_corr_y[:N] += 1
-valid_corr_y = counts_corr_y >= min_particles_avg
-t_corr_y = t_common[valid_corr_y]
-ensemble_corr_mean_y = ensemble_corr_sum_y[valid_corr_y] / counts_corr_y[valid_corr_y]
-axs_y[1].plot(t_corr_y, ensemble_corr_mean_y, "b-", lw=2, label="Ensemble Average")
-axs_y[1].set_xlabel("Time (s)")
-axs_y[1].set_ylabel("y_corr (µm)")
-axs_y[1].set_title("Y: Drift-Corrected Trajectories with Ensemble Average")
-axs_y[1].legend()
-
-# (3) Ensemble-averaged radius-scaled MSD for y.
-axs_y[2].scatter(
-    t_valid_scaled_y, ensemble_avg_scaled_MSD_y, s=30, label="Ensemble MSD_y (scaled)"
-)
-axs_y[2].plot(
-    t_valid_scaled_y,
-    msd_predicted_y,
-    "r-",
-    lw=2,
-    label=f"Fit: y = {m_y:.3f} x, R² = {R2_y:.3f}",
-)
-axs_y[2].set_xlabel("Time (s)")
-axs_y[2].set_ylabel("r * MSD_y (µm³)")
-axs_y[2].set_title("Y: Ensemble-Averaged Radius-Scaled MSD vs. Time")
-axs_y[2].legend()
-
+# ... (original plotting code for Y-data)
 fig_y.tight_layout()
 fig_y.savefig("ensemble_analysis_y.png", dpi=300)
 plt.show()
@@ -504,51 +653,18 @@ plt.show()
 #############################################
 # For X-data:
 fig_x_bottom, axs_x_bottom = plt.subplots(2, 1, figsize=(12, 10))
-axs_x_bottom[0].plot(t_common, ensemble_count_scaled_x, "o-")
-axs_x_bottom[0].axhline(
-    y=min_particles_avg,
-    color="red",
-    linestyle="--",
-    label=f"Threshold = {min_particles_avg}",
-)
-axs_x_bottom[0].set_xlabel("Time (s)")
-axs_x_bottom[0].set_ylabel("Number of Contributing Chunks")
-axs_x_bottom[0].set_title("X: Contributing Chunks vs. Time")
-axs_x_bottom[0].legend()
-
-axs_x_bottom[1].hist(
-    np.array(particle_radii), bins=20, color="skyblue", edgecolor="black"
-)
-axs_x_bottom[1].set_xlabel("Bead Radius (µm)")
-axs_x_bottom[1].set_ylabel("Frequency")
-axs_x_bottom[1].set_title("Distribution of Bead Radii")
+# ... (original bottom panel code for X-data)
 fig_x_bottom.tight_layout()
 fig_x_bottom.savefig("bottom_panel_and_radii_x.png", dpi=300)
 plt.show()
 
 # For Y-data:
 fig_y_bottom, axs_y_bottom = plt.subplots(2, 1, figsize=(12, 10))
-axs_y_bottom[0].plot(t_common, ensemble_count_scaled_y, "o-")
-axs_y_bottom[0].axhline(
-    y=min_particles_avg,
-    color="red",
-    linestyle="--",
-    label=f"Threshold = {min_particles_avg}",
-)
-axs_y_bottom[0].set_xlabel("Time (s)")
-axs_y_bottom[0].set_ylabel("Number of Contributing Chunks")
-axs_y_bottom[0].set_title("Y: Contributing Chunks vs. Time")
-axs_y_bottom[0].legend()
-
-axs_y_bottom[1].hist(
-    np.array(particle_radii), bins=20, color="skyblue", edgecolor="black"
-)
-axs_y_bottom[1].set_xlabel("Bead Radius (µm)")
-axs_y_bottom[1].set_ylabel("Frequency")
-axs_y_bottom[1].set_title("Distribution of Bead Radii")
+# ... (original bottom panel code for Y-data)
 fig_y_bottom.tight_layout()
 fig_y_bottom.savefig("bottom_panel_and_radii_y.png", dpi=300)
 plt.show()
+"""
 
 #############################################
 ### BOLTZMANN CONSTANT CALCULATION
