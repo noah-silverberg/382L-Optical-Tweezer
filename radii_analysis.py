@@ -40,11 +40,12 @@ print(f"  Std Dev: {std_radius:.2f} µm")
 print(f"  Median : {median_radius:.2f} µm")
 print(f"  Min    : {min_radius:.2f} µm")
 print(f"  Max    : {max_radius:.2f} µm")
+print(f"  Count  : {len(radii)}")
 
 # Create a figure for the distribution.
 plt.figure(figsize=(10, 6))
 n, bins, patches = plt.hist(
-    radii, bins=int(np.sqrt(len(radii))), color="skyblue", edgecolor="black", alpha=0.8
+    radii, bins=10, color="skyblue", edgecolor="black", alpha=0.8
 )
 
 # Add vertical lines for the mean and one standard deviation.
