@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 
 #############################################
 ### ENSEMBLE AVERAGE (NORMAL) DIFFUSION SCRIPT ###
@@ -310,6 +311,103 @@ for t_arr, x_arr, y_arr in zip(particle_time, particle_raw_x, particle_raw_y):
     particle_driftcorr_x.append(x_corr)
     particle_driftcorr_y.append(y_corr)
 
+
+def profile_slope(
+    t,
+    y,
+    m_best,
+    b_best,
+    sigma=None,
+    n_grid=61,
+    n_sigma=3,
+    out_png="profile.png",
+    label="",
+):
+    """
+    Fix the slope m on a grid around m_best, re-fit the intercept b at
+    each point, and compute χ².  Return the profiled best m and its 1 σ
+    error (Δχ² = 1).
+
+    Parameters
+    ----------
+    t, y        : 1-D arrays   data points
+    m_best      : float        slope from initial fit
+    b_best      : float        intercept from initial fit
+    sigma       : 1-D array or None   per-point σ (None ⇒ equal weights)
+    n_grid      : int          grid points in ±n_sigma·σ_m
+    n_sigma     : float        half-width in units of initial σ_m
+    out_png     : str          file name for diagnostic plot
+    label       : str          text for figure title
+
+    Returns
+    -------
+    m_prof, m_err   profiled slope and its 1 σ error
+    """
+    # Rough initial σ_m from covariance or 1 % of slope if unknown
+    if sigma is None:
+        σm_init = abs(0.01 * m_best)  # crude
+    else:
+        # analytical formula for σ_m in unweighted LS with equal σ
+        Sxx = np.sum((t - t.mean()) ** 2)
+        σm_init = np.sqrt(np.mean(sigma**2) / Sxx)
+
+    m_grid = np.linspace(m_best - n_sigma * σm_init, m_best + n_sigma * σm_init, n_grid)
+
+    chi2_vals = []
+    b_vals = []
+
+    for m in m_grid:
+        # Best b for fixed m (weighted or un-weighted)
+        if sigma is None:
+            b = np.mean(y - m * t)
+            resid = y - (m * t + b)
+            chi2 = np.sum(resid**2)
+        else:
+            w = 1.0 / sigma**2
+            b = np.sum(w * (y - m * t)) / np.sum(w)
+            resid = y - (m * t + b)
+            chi2 = np.sum((resid / sigma) ** 2)
+        b_vals.append(b)
+        chi2_vals.append(chi2)
+
+    chi2_vals = np.asarray(chi2_vals)
+    b_vals = np.asarray(b_vals)
+
+    j_min = np.argmin(chi2_vals)
+    chi2min = chi2_vals[j_min]
+    m_prof = m_grid[j_min]
+
+    # 1-σ where χ² = χ²_min + 1
+    try:
+        left = np.interp(chi2min + 1, chi2_vals[:j_min][::-1], m_grid[:j_min][::-1])
+        right = np.interp(chi2min + 1, chi2_vals[j_min:], m_grid[j_min:])
+        m_err = 0.5 * ((m_prof - left) + (right - m_prof))
+    except Exception:
+        m_err = np.nan
+
+    # ------------- diagnostic figure -------------
+    fig, ax1 = plt.subplots(figsize=(5.2, 4.2))
+    ax1.plot(m_grid, chi2_vals, "o-", lw=1)
+    ax1.axhline(chi2min + 1, c="r", ls="--")
+    ax1.axvline(m_prof, c="g", ls="--")
+    ax1.set_xlabel(r"Slope $m$ ($\mu\mathrm{m}^2\,\mathrm{s}^{-1}$)")
+    ax1.set_ylabel(r"$\chi^2$")
+    ax1.set_title(f"χ² profile – {label}")
+
+    # Secondary axis to show best-fit intercept vs m
+    ax2 = ax1.twinx()
+    ax2.plot(m_grid, b_vals, "k:", alpha=0.6)
+    ax2.set_ylabel(r"best $b$ ($\mu\mathrm{m}^2$)", color="k", alpha=0.6)
+    # ax2.tick_params(axis="y", labelcolor="k", colors="k", alpha=0.6)
+
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=300)
+    plt.close(fig)
+    # ---------------------------------------------
+
+    return m_prof, m_err
+
+
 #############################################
 ### ENSEMBLE AVERAGING OF MSD (NO RADIUS SCALING) FOR X
 #############################################
@@ -324,22 +422,59 @@ valid_MSD_x = ensemble_count_MSD_x >= min_particles_thresh
 t_valid_MSD_x = t_common[valid_MSD_x]
 ensemble_avg_MSD_x = ensemble_sum_MSD_x[valid_MSD_x] / ensemble_count_MSD_x[valid_MSD_x]
 
-(slope_x, intercept_x), cov_mx = np.polyfit(
-    t_valid_MSD_x, ensemble_avg_MSD_x, 1, cov=True
+# ——— compute point-by-point std and sem for the MSD X data ———
+msd_vals_x = [[] for _ in range(max_length)]
+for traj_x in particle_driftcorr_x:
+    for j, dx in enumerate(traj_x):
+        msd_vals_x[j].append(dx * dx)
+
+# array of σ_MSD at each lag
+msd_std_x = np.array(
+    [np.std(vals, ddof=1) if len(vals) > 1 else np.nan for vals in msd_vals_x]
 )
-sigma_slope_x = np.sqrt(cov_mx[0, 0])
+# standard error of the mean: σ/√N
+sem_x = msd_std_x / np.sqrt(ensemble_count_MSD_x)
+sigma_point_x = sem_x[valid_MSD_x]  # only keep the valid lags
+
+
+# ——— weighted linear fit using scipy.curve_fit ———
+def lin(t, m, b):
+    return m * t + b
+
+
+popt_x, pcov_x = curve_fit(
+    lin,
+    t_valid_MSD_x,
+    ensemble_avg_MSD_x,
+    sigma=sigma_point_x,
+    absolute_sigma=True,
+)
+slope_x, intercept_x = popt_x
+sigma_slope_x, sigma_intercept_x = np.sqrt(np.diag(pcov_x))
+
 D_x = slope_x / 2.0
 sigma_D_x = sigma_slope_x / 2.0
 
+prof_m_x, prof_σm_x = profile_slope(
+    t_valid_MSD_x,
+    ensemble_avg_MSD_x,
+    slope_x,
+    intercept_x,
+    sigma=sigma_point_x,  # ← use the real SEM array
+    n_sigma=1,
+    n_grid=101,
+    out_png="profile_slope_X.png",
+    label="X (MSD)",
+)
 msd_pred_x = slope_x * t_valid_MSD_x
 ss_res_x = np.sum((ensemble_avg_MSD_x - msd_pred_x) ** 2)
 ss_tot_x = np.sum((ensemble_avg_MSD_x - np.mean(ensemble_avg_MSD_x)) ** 2)
 R2_MSD_x = 1 - ss_res_x / ss_tot_x
 
-print("\n=== MSD Fit Error Statistics for X ===")
-print(
-    f"Slope_x = {slope_x:.4f} ± {sigma_slope_x:.4f} (µm²/s), D_x = {D_x:.4f} ± {sigma_D_x:.4f} µm²/s, R² = {R2_MSD_x:.3f}"
-)
+print("\n=== MSD Fit Error Statistics for X (profiled) ===")
+print(f"Slope_x = {prof_m_x:.6f} ± {prof_σm_x:.6f} (µm²/s)")
+print(f"D_x     = {D_x:.6f} ± {sigma_D_x:.6f} µm²/s")
+print(f"R²      = {R2_MSD_x:.3f}")
 
 #############################################
 ### ENSEMBLE AVERAGING OF MSD (NO RADIUS SCALING) FOR Y
@@ -355,22 +490,52 @@ valid_MSD_y = ensemble_count_MSD_y >= min_particles_thresh
 t_valid_MSD_y = t_common[valid_MSD_y]
 ensemble_avg_MSD_y = ensemble_sum_MSD_y[valid_MSD_y] / ensemble_count_MSD_y[valid_MSD_y]
 
-(slope_y, intercept_y), cov_my = np.polyfit(
-    t_valid_MSD_y, ensemble_avg_MSD_y, 1, cov=True
+msd_vals_y = [[] for _ in range(max_length)]
+for traj_y in particle_driftcorr_y:
+    for j, dy in enumerate(traj_y):
+        msd_vals_y[j].append(dy * dy)
+
+msd_std_y = np.array(
+    [np.std(vals, ddof=1) if len(vals) > 1 else np.nan for vals in msd_vals_y]
 )
-sigma_slope_y = np.sqrt(cov_my[0, 0])
+sem_y = msd_std_y / np.sqrt(ensemble_count_MSD_y)
+sigma_point_y = sem_y[valid_MSD_y]
+
+popt_y, pcov_y = curve_fit(
+    lin,
+    t_valid_MSD_y,
+    ensemble_avg_MSD_y,
+    sigma=sigma_point_y,
+    absolute_sigma=True,
+)
+slope_y, intercept_y = popt_y
+sigma_slope_y, sigma_intercept_y = np.sqrt(np.diag(pcov_y))
+
 D_y = slope_y / 2.0
 sigma_D_y = sigma_slope_y / 2.0
+
+prof_m_y, prof_σm_y = profile_slope(
+    t_valid_MSD_y,
+    ensemble_avg_MSD_y,
+    slope_y,
+    intercept_y,
+    sigma=sigma_point_y,
+    n_sigma=1,
+    n_grid=101,
+    out_png="profile_slope_Y.png",
+    label="Y (MSD)",
+)
+
 
 msd_pred_y = slope_y * t_valid_MSD_y
 ss_res_y = np.sum((ensemble_avg_MSD_y - msd_pred_y) ** 2)
 ss_tot_y = np.sum((ensemble_avg_MSD_y - np.mean(ensemble_avg_MSD_y)) ** 2)
 R2_MSD_y = 1 - ss_res_y / ss_tot_y
 
-print("\n=== MSD Fit Error Statistics for Y ===")
-print(
-    f"Slope_y = {slope_y:.4f} ± {sigma_slope_y:.4f} (µm²/s), D_y = {D_y:.4f} ± {sigma_D_y:.4f} µm²/s, R² = {R2_MSD_y:.3f}"
-)
+print("\n=== MSD Fit Error Statistics for Y (profiled) ===")
+print(f"Slope_y = {prof_m_y:.6f} ± {prof_σm_y:.6f} (µm²/s)")
+print(f"D_y     = {D_y:.6f} ± {sigma_D_y:.6f} µm²/s")
+print(f"R²      = {R2_MSD_y:.3f}")
 
 #############################################
 ### AVERAGE DIFFUSION COEFFICIENT (X & Y)
