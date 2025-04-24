@@ -602,9 +602,9 @@ msd_std = np.array(
 valid_plot = ensemble_count_y >= min_particles_thresh
 x_valid = t_common[valid_plot]
 y_corr_avg_valid = y_corr_avg[valid_plot]
-y_corr_std_valid = y_corr_std[valid_plot]
+y_corr_std_valid = y_corr_std[valid_plot] / np.sqrt(ensemble_count_y[valid_plot])
 msd_avg_valid = msd_avg[valid_plot]
-msd_std_valid = msd_std[valid_plot]
+msd_std_valid = msd_std[valid_plot] / np.sqrt(ensemble_count_y[valid_plot])
 
 # Re-use the previously computed slope_y for plotting.
 m_y_unscaled = slope_y
@@ -647,7 +647,7 @@ axs[0].text(
 )
 
 # RIGHT PLOT: Ensemble-averaged unscaled MSD with STD band and linear fit (Y only).
-axs[1].plot(x_valid, msd_avg_valid, "r--", lw=2, label="Ensemble MSD")
+axs[1].plot(x_valid, msd_avg_valid, "r--", lw=2, label="Drift-corrected Ensemble MSD")
 axs[1].fill_between(
     x_valid,
     msd_avg_valid - msd_std_valid,
@@ -656,8 +656,8 @@ axs[1].fill_between(
     alpha=0.3,
     label="±1 STD",
 )
-axs[1].plot(x_valid, msd_fit, "b-", lw=2, label=f"Fit: y = {m_y_unscaled:.3f} t")
-axs[1].set_title("MSD vs. Time", fontsize=18)
+axs[1].plot(x_valid, msd_fit, "b-", lw=2, label=f"Linear Fit")
+axs[1].set_title("Drift-corrected MSD", fontsize=18)
 axs[1].set_xlabel("Time (s)", fontsize=16)
 axs[1].set_ylabel("MSD ($\mu$m$^2$)", fontsize=16)
 axs[1].legend(fontsize=14, loc="upper left")
