@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 
 #############################################
 ### ENSEMBLE AVERAGE RADIUS-ADJUSTED SCRIPT ###
@@ -364,34 +365,98 @@ if np.any(~valid_mask_y):
 else:
     last_valid_time_y = t_common[-1]
 
-#############################################
-### LINEAR FIT (FORCED THROUGH ZERO)
-#############################################
-m_x = np.sum(t_valid_scaled_x * ensemble_avg_scaled_MSD_x) / np.sum(t_valid_scaled_x**2)
-D0_x = m_x / 2.0  # in µm³/s
-m_y = np.sum(t_valid_scaled_y * ensemble_avg_scaled_MSD_y) / np.sum(t_valid_scaled_y**2)
-D0_y = m_y / 2.0
+
+# -------------------------------------------------------------------
+#  WEIGHTED LINEAR FIT  (forced through 0)  –  all raw points
+# -------------------------------------------------------------------
+def lin0(t, m):  # model with zero intercept
+    return m * t
+
+
+# ── 1) per–lag standard–deviation (σlag) ────────────────────────────
+msd_lag_vals_x = [[] for _ in range(max_length)]
+msd_lag_vals_y = [[] for _ in range(max_length)]
+
+for traj in range(len(particle_time)):
+    for j, (mx, my) in enumerate(
+        zip(particle_scaled_MSD_x[traj], particle_scaled_MSD_y[traj])
+    ):
+        msd_lag_vals_x[j].append(mx)
+        msd_lag_vals_y[j].append(my)
+
+σ_lag_x = np.array(
+    [np.std(v, ddof=1) if len(v) > 1 else np.nan for v in msd_lag_vals_x]
+)
+σ_lag_y = np.array(
+    [np.std(v, ddof=1) if len(v) > 1 else np.nan for v in msd_lag_vals_y]
+)
+
+# ── 2) assemble ONE big array for each axis ─────────────────────────
+t_all_x, y_all_x, σ_all_x = [], [], []
+t_all_y, y_all_y, σ_all_y = [], [], []
+
+for traj, t_vec in enumerate(particle_time):
+    msd_x = particle_scaled_MSD_x[traj]
+    msd_y = particle_scaled_MSD_y[traj]
+
+    for j, (mx, my) in enumerate(zip(msd_x, msd_y)):
+        # keep only time-lags that (i) have enough particles and (ii) finite σ
+        if j == 0:  # toss the (t=0, MSD=0) points
+            continue
+        if valid_scaled_x[j] and np.isfinite(σ_lag_x[j]) and σ_lag_x[j] > 0:
+            t_all_x.append(t_vec[j])
+            y_all_x.append(mx)
+            σ_all_x.append(σ_lag_x[j])
+        if valid_scaled_y[j] and np.isfinite(σ_lag_y[j]) and σ_lag_y[j] > 0:
+            t_all_y.append(t_vec[j])
+            y_all_y.append(my)
+            σ_all_y.append(σ_lag_y[j])
+
+t_all_x = np.asarray(t_all_x)
+y_all_x = np.asarray(y_all_x)
+σ_all_x = np.asarray(σ_all_x)
+
+t_all_y = np.asarray(t_all_y)
+y_all_y = np.asarray(y_all_y)
+σ_all_y = np.asarray(σ_all_y)
+
+# ── 3) weighted least-squares slope and its error (analytic) ───────
+w_x = 1.0 / σ_all_x**2
+Sxx_x = np.sum(w_x * t_all_x**2)
+Sxy_x = np.sum(w_x * t_all_x * y_all_x)
+m_x_opt = Sxy_x / Sxx_x
+σ_m_x = np.sqrt(1.0 / Sxx_x)
+
+w_y = 1.0 / σ_all_y**2
+Sxx_y = np.sum(w_y * t_all_y**2)
+Sxy_y = np.sum(w_y * t_all_y * y_all_y)
+m_y_opt = Sxy_y / Sxx_y
+σ_m_y = np.sqrt(1.0 / Sxx_y)
+
+D0_x = m_x_opt / 2.0
+D0_x_err = σ_m_x / 2.0
+D0_y = m_y_opt / 2.0
+D0_y_err = σ_m_y / 2.0
+
+# ── 4) χ² / dof using the *same* raw points ────────────────────────
+χ2_x = np.sum(((y_all_x - m_x_opt * t_all_x) / σ_all_x) ** 2)
+χ2_y = np.sum(((y_all_y - m_y_opt * t_all_y) / σ_all_y) ** 2)
+redχ2_x = χ2_x / (len(t_all_x) - 1)
+redχ2_y = χ2_y / (len(t_all_y) - 1)
+
+print("\n=== Weighted fit on ALL raw points (radius-scaled MSD) ===")
+print(f"D0_x = {D0_x:.4f} ± {D0_x_err:.4f} µm³/s   (χ²/dof = {redχ2_x:.4f})")
+print(f"D0_y = {D0_y:.4f} ± {D0_y_err:.4f} µm³/s   (χ²/dof = {redχ2_y:.4f})")
+
 D0_avg = (D0_x + D0_y) / 2.0
+D0_avg_err = np.sqrt(D0_x_err**2 + D0_y_err**2) / 2.0
+print(f"\nEnsemble average D0 = {D0_avg:.4f} µm³/s")
 
-msd_predicted_x = m_x * t_valid_scaled_x
-msd_predicted_y = m_y * t_valid_scaled_y
+# Print the ensemble average D = D0 / r (± error propagation)
+print(
+    f"Ensemble average D0 / r (± error propagation) = {D0_avg / np.mean(particle_radii):.4f} ± {D0_avg_err / np.mean(particle_radii):.4f} µm²/s"
+)
 
-ss_res_x = np.sum((ensemble_avg_scaled_MSD_x - msd_predicted_x) ** 2)
-ss_tot_x = np.sum((ensemble_avg_scaled_MSD_x - np.mean(ensemble_avg_scaled_MSD_x)) ** 2)
-R2_x = 1 - ss_res_x / ss_tot_x
-
-ss_res_y = np.sum((ensemble_avg_scaled_MSD_y - msd_predicted_y) ** 2)
-ss_tot_y = np.sum((ensemble_avg_scaled_MSD_y - np.mean(ensemble_avg_scaled_MSD_y)) ** 2)
-R2_y = 1 - ss_res_y / ss_tot_y
-
-print("\n=== Ensemble Analysis (Radius–Adjusted) ===")
-# print(
-#     f"X–direction: Estimated universal diffusion parameter D0_x = {D0_x:.4f} µm³/s (R² = {R2_x:.4f})"
-# )
-# print(
-#     f"Y–direction: Estimated universal diffusion parameter D0_y = {D0_y:.4f} µm³/s (R² = {R2_y:.4f})"
-# )
-print(f"Ensemble average D0 = {D0_avg:.4f} µm³/s")
 
 # Compute the ensemble average for original y values (using all trajectories).
 ensemble_avg_y_original = np.divide(
@@ -455,9 +520,9 @@ msd_std = np.array(
 valid = ensemble_count_y >= min_particles_avg
 x_valid = t_common[valid]
 y_corr_avg_valid = y_corr_avg[valid]
-y_corr_std_valid = y_corr_std[valid]
+y_corr_std_valid = y_corr_std[valid] / np.sqrt(ensemble_count_y[valid])
 msd_avg_valid = msd_avg[valid]
-msd_std_valid = msd_std[valid]
+msd_std_valid = msd_std[valid] / np.sqrt(ensemble_count_y[valid])
 
 # ==============================================================
 # Compute STD bands for the unscaled MSD (drift-corrected) for X
@@ -479,82 +544,7 @@ msd_std_x = np.array(
 valid_x = ensemble_count_x >= min_particles_avg
 x_valid_x = t_common[valid_x]
 msd_avg_valid_x = msd_avg_x[valid_x]
-msd_std_valid_x = msd_std_x[valid_x]
-
-
-# ==============================================================
-# Perform linear fit (forced through zero) for the MSD data.
-# ==============================================================
-m_y_unscaled = np.sum(x_valid * msd_avg_valid) / np.sum(x_valid**2)
-msd_fit = m_y_unscaled * x_valid
-
-# --- Step 1: Collect raw data points for the y–direction (exclude first point) ---
-raw_times = []
-raw_msd = []
-# Use only raw points up to the last valid ensemble time (from x_valid, excluding the first point).
-max_valid_time = x_valid[-1]
-for t_arr, msd_arr in zip(particle_time, particle_scaled_MSD_y):
-    # Start at index 1 to skip the first point
-    for t_val, msd_val in zip(t_arr[1:], msd_arr[1:]):
-        if t_val <= max_valid_time:
-            raw_times.append(t_val)
-            raw_msd.append(msd_val)
-raw_times = np.array(raw_times)
-raw_msd = np.array(raw_msd)
-
-# --- Step 2: Fit the raw data (forced through zero, excluding first point) ---
-# Compute the slope using only the collected raw data points.
-m_y_raw = np.sum(raw_times * raw_msd) / np.sum(raw_times**2)
-msd_fit_raw = m_y_raw * raw_times
-
-# --- Step 3: Interpolate the uncertainty ---
-# We assume x_valid and msd_std_valid were computed using ensemble data and already exclude t=0,
-# or if not, we can simply ignore the first point.
-sigma_interp = np.interp(raw_times, x_valid, msd_std_valid)
-
-# --- Step 4: Calculate chi-square and reduced chi-square ---
-chi2_raw = np.sum(((raw_msd - msd_fit_raw) ** 2) / (sigma_interp**2))
-dof_raw = len(raw_times) - 1  # one fit parameter (the slope)
-red_chi2_raw = chi2_raw / dof_raw
-
-print("\n=== Chi-Square Analysis Using Raw Data Points (Excluding First Point) ===")
-print(f"Fitted slope (m_y_raw) = {m_y_raw:.4f}")
-print(f"Chi-square (raw) = {chi2_raw:.3f}")
-print(f"Reduced chi-square (raw) = {red_chi2_raw:.3f}")
-
-
-# --- X-Direction: Collect raw data points (excluding first point) ---
-raw_times_x = []
-raw_msd_x = []
-# Use only raw points up to the last valid ensemble time for x (x_valid_x), excluding the first point.
-max_valid_time_x = x_valid_x[-1]
-for t_arr, msd_arr in zip(particle_time, particle_scaled_MSD_x):
-    # Skip the first point by slicing with [1:]
-    for t_val, msd_val in zip(t_arr[1:], msd_arr[1:]):
-        if t_val <= max_valid_time_x:
-            raw_times_x.append(t_val)
-            raw_msd_x.append(msd_val)
-raw_times_x = np.array(raw_times_x)
-raw_msd_x = np.array(raw_msd_x)
-
-# --- X-Direction: Fit the raw data (forced through zero, excluding first point) ---
-m_x_raw = np.sum(raw_times_x * raw_msd_x) / np.sum(raw_times_x**2)
-msd_fit_raw_x = m_x_raw * raw_times_x
-
-# --- X-Direction: Interpolate the uncertainty ---
-sigma_interp_x = np.interp(raw_times_x, x_valid_x, msd_std_valid_x)
-
-# --- X-Direction: Calculate chi-square and reduced chi-square ---
-chi2_raw_x = np.sum(((raw_msd_x - msd_fit_raw_x) ** 2) / (sigma_interp_x**2))
-dof_raw_x = len(raw_times_x) - 1  # one fit parameter (the slope)
-red_chi2_raw_x = chi2_raw_x / dof_raw_x
-
-print(
-    "\n=== Chi-Square Analysis Using Raw Data Points (Excluding First Point) for X-Direction ==="
-)
-print(f"Fitted slope (m_x_raw) = {m_x_raw:.4f}")
-print(f"Chi-square (raw) for X = {chi2_raw_x:.3f}")
-print(f"Reduced chi-square (raw) for X = {red_chi2_raw_x:.3f}")
+msd_std_valid_x = msd_std_x[valid_x] / np.sqrt(ensemble_count_x[valid_x])
 
 
 # ==============================================================
@@ -565,19 +555,24 @@ fig, axs = plt.subplots(1, 2, figsize=(18, 5.1), sharex=True)
 
 # LEFT PLOT: Drift-corrected y displacement with STD band.
 axs[0].plot(
-    x_valid, y_corr_avg_valid, "r--", lw=2, label="Drift-corrected Ensemble Average"
+    x_valid,
+    y_corr_avg_valid,
+    color="tab:red",
+    linestyle="--",
+    lw=2,
+    label="Drift-corrected Ensemble Average",
 )
 axs[0].fill_between(
     x_valid,
     y_corr_avg_valid - y_corr_std_valid,
     y_corr_avg_valid + y_corr_std_valid,
-    color="gray",
+    color="tab:gray",
     alpha=0.3,
     label="±1 STD",
 )
 axs[0].set_title(r"Drift-corrected $y$ displacement", fontsize=18)
 axs[0].set_xlabel("Time (s)", fontsize=16)
-axs[0].set_ylabel(r"$y$ displacement ($\mu$m)", fontsize=16)
+axs[0].set_ylabel(r"$y$ ($\mu$m)", fontsize=16)
 axs[0].legend(fontsize=14)
 axs[0].tick_params(axis="both", which="major", labelsize=14)
 # Adjust annotation position to avoid overlap with the legend.
@@ -587,29 +582,45 @@ axs[0].text(
     f"Corrected drift velocity: $v_y = {global_v_y:.2f}$ $\mu$m/s",
     transform=axs[0].transAxes,
     fontsize=14,
-    color="black",
+    color="0.2",
     bbox=dict(facecolor="white", edgecolor="black", boxstyle="round,pad=0.3"),
 )
 
 # RIGHT PLOT: Ensemble-averaged unscaled MSD with STD band and linear fit.
 # RIGHT PLOT: Ensemble-averaged unscaled MSD with STD band and linear fit.
-axs[1].plot(x_valid, msd_avg_valid, "r--", lw=2, label="Ensemble MSD")
+axs[1].plot(
+    x_valid, msd_avg_valid, color="tab:red", linestyle="--", lw=2, label="Ensemble MSD"
+)
 axs[1].fill_between(
     x_valid,
     msd_avg_valid - msd_std_valid,
     msd_avg_valid + msd_std_valid,
-    color="gray",
+    color="tab:gray",
     alpha=0.3,
     label="±1 STD",
 )
-axs[1].plot(x_valid, msd_fit, "b-", lw=2, label=f"Fit: y = {m_y_unscaled:.3f} t")
+axs[1].plot(
+    x_valid,
+    m_y_opt * x_valid,
+    color="tab:blue",
+    linestyle="-",
+    lw=2,
+    label=f"Linear fit",
+)
+fit_text = (
+    r"Fit Equation: MSD = "
+    + f"${m_y_opt:.3f}"
+    + r" \cdot t$"
+    + "\n"
+    + r"$\chi^2$/DOF = "
+    + f"{redχ2_y:.4f}"
+)
 axs[1].set_title("MSD vs. Time", fontsize=18)
 axs[1].set_xlabel("Time (s)", fontsize=16)
-axs[1].set_ylabel("MSD ($\mu$m$^2$)", fontsize=16)
+axs[1].set_ylabel("$y^2$ ($\mu$m$^2$)", fontsize=16)
 axs[1].legend(fontsize=14, loc="upper left")
 axs[1].tick_params(axis="both", which="major", labelsize=14)
 # Boxed annotation with the linear fit parameters moved lower.
-fit_text = f"Fit: y = {m_y_unscaled:.3f} t\nReduced $\chi^2$ = {red_chi2_raw:.3f}"
 axs[1].text(
     0.05,
     0.75,
@@ -670,21 +681,29 @@ plt.show()
 ### BOLTZMANN CONSTANT CALCULATION
 #############################################
 D0_avg_m3 = D0_avg * 1e-18  # 1 µm³ = 1e-18 m³
+D0_avg_m3_err = D0_avg_err * 1e-18  # 1 µm³ = 1e-18 m³
 T_Celsius = (
     24.78  # Room temperature (assumed to be equal to the fluid & bead temperature)
 )
 T_Kelvin = T_Celsius + 273.15
 eta = 0.89e-3  # Pa·s (found from online source)
-kb_est = D0_avg_m3 * 6 * np.pi * eta / T_Kelvin
+
+# Estimate k_B and propagate D0 error
+factor = 6 * np.pi * eta / T_Kelvin
+kb_est = D0_avg_m3 * factor
+kb_est_err = D0_avg_m3_err * factor  # propagated error
+
 kb_actual = 1.380649e-23  # J/K
 
 print("\n=== Boltzmann Constant Calculation ===")
-print(f"Ensemble average D0 (converted) = {D0_avg_m3:.2e} m³/s")
-print(f"Estimated k_B = {kb_est:.2e} J/K")
+print(f"Ensemble average D0 (converted) = {D0_avg_m3:.2e} m³/s ± {D0_avg_m3_err:.2e}")
+print(f"Estimated k_B = {kb_est:.3e} J/K ± {kb_est_err:.3e} J/K")
 error_percent = 100 * abs(kb_est - kb_actual) / kb_actual
 print(f"Percent error in k_B = {error_percent:.2f}%")
 
 D_theory = kb_actual * T_Kelvin / (6 * np.pi * eta)  # in m³/s
 print("\nTheoretical Universal Diffusion Constant Calculation:")
 print(f"Theoretical D0 = {D_theory:.2e} m³/s")
-print(f"Measured ensemble D0 (from experiment) = {D0_avg_m3:.2e} m³/s")
+print(
+    f"Measured ensemble D0 (from experiment) = {D0_avg_m3:.2e} m³/s ± {D0_avg_m3_err:.2e}"
+)
