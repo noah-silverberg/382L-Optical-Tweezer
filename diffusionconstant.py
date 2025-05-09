@@ -248,6 +248,10 @@ particle_raw_y = chunked_raw_y
 particle_radii = chunked_radii
 particle_lengths = chunked_lengths
 
+# Print number of chunks
+num_chunks = len(particle_time)
+print(f"Number of chunks: {num_chunks}")
+
 #############################################
 ### GLOBAL (ENSEMBLE) DRIFT ESTIMATION
 #############################################
@@ -551,47 +555,13 @@ msd_std_valid_x = msd_std_x[valid_x] / np.sqrt(ensemble_count_x[valid_x])
 # Create the 2-subplot figure with STD bands.
 # ==============================================================
 plt.style.use("seaborn-v0_8-whitegrid")
-fig, axs = plt.subplots(1, 2, figsize=(18, 5.1), sharex=True)
+fig, ax = plt.subplots(figsize=(11, 5))
 
-# LEFT PLOT: Drift-corrected y displacement with STD band.
-axs[0].plot(
-    x_valid,
-    y_corr_avg_valid,
-    color="tab:red",
-    linestyle="--",
-    lw=2,
-    label="Drift-corrected Ensemble Average",
-)
-axs[0].fill_between(
-    x_valid,
-    y_corr_avg_valid - y_corr_std_valid,
-    y_corr_avg_valid + y_corr_std_valid,
-    color="tab:gray",
-    alpha=0.3,
-    label="±1 STD",
-)
-axs[0].set_title(r"Drift-corrected $y$ displacement", fontsize=18)
-axs[0].set_xlabel("Time (s)", fontsize=16)
-axs[0].set_ylabel(r"$y$ ($\mu$m)", fontsize=16)
-axs[0].legend(fontsize=14)
-axs[0].tick_params(axis="both", which="major", labelsize=14)
-# Adjust annotation position to avoid overlap with the legend.
-axs[0].text(
-    0.05,
-    0.75,
-    f"Corrected drift velocity: $v_y = {global_v_y:.2f}$ $\mu$m/s",
-    transform=axs[0].transAxes,
-    fontsize=14,
-    color="0.2",
-    bbox=dict(facecolor="white", edgecolor="black", boxstyle="round,pad=0.3"),
-)
-
-# RIGHT PLOT: Ensemble-averaged unscaled MSD with STD band and linear fit.
-# RIGHT PLOT: Ensemble-averaged unscaled MSD with STD band and linear fit.
-axs[1].plot(
+# MSD plot: Ensemble-averaged unscaled MSD with STD band and linear fit.
+ax.plot(
     x_valid, msd_avg_valid, color="tab:red", linestyle="--", lw=2, label="Ensemble MSD"
 )
-axs[1].fill_between(
+ax.fill_between(
     x_valid,
     msd_avg_valid - msd_std_valid,
     msd_avg_valid + msd_std_valid,
@@ -599,41 +569,36 @@ axs[1].fill_between(
     alpha=0.3,
     label="±1 STD",
 )
-axs[1].plot(
+ax.plot(
     x_valid,
     m_y_opt * x_valid,
     color="tab:blue",
     linestyle="-",
     lw=2,
-    label=f"Linear fit",
+    label="Linear fit",
 )
-fit_text = (
-    r"Fit Equation: MSD = "
-    + f"${m_y_opt:.3f}"
-    + r" \cdot t$"
-    + "\n"
-    + r"$\chi^2$/DOF = "
-    + f"{redχ2_y:.4f}"
-)
-axs[1].set_title("MSD vs. Time", fontsize=18)
-axs[1].set_xlabel("Time (s)", fontsize=16)
-axs[1].set_ylabel("$y^2$ ($\mu$m$^2$)", fontsize=16)
-axs[1].legend(fontsize=14, loc="upper left")
-axs[1].tick_params(axis="both", which="major", labelsize=14)
-# Boxed annotation with the linear fit parameters moved lower.
-axs[1].text(
-    0.05,
-    0.75,
+
+# Fit statistics text
+fit_text = r"$\chi^2$/DOF = " + f"{redχ2_y:.4f}"
+ax.set_title("MSD vs. Time", fontsize=24)
+ax.set_xlabel("Time (s)", fontsize=22)
+ax.set_ylabel("$y^2$ ($\mu$m$^2$)", fontsize=22)
+ax.legend(fontsize=20, loc="upper left")
+ax.tick_params(axis="both", which="major", labelsize=18)
+
+# Boxed annotation with the linear fit parameters
+ax.text(
+    0.03,
+    0.62,
     fit_text,
-    transform=axs[1].transAxes,
-    fontsize=14,
+    transform=ax.transAxes,
+    fontsize=20,
     verticalalignment="top",
     bbox=dict(boxstyle="round", facecolor="white", edgecolor="black", alpha=0.8),
 )
 
-
 fig.tight_layout()
-fig.savefig("ytrajectories.png", dpi=300)
+fig.savefig("ytrajectories.png", dpi=400)
 plt.show()
 
 
